@@ -1,0 +1,28 @@
+package org.booklore.service.magicshelf;
+
+import org.booklore.model.entity.MagicShelfEntity;
+import org.booklore.config.security.service.AuthenticationService;
+import org.springframework.stereotype.Component;
+
+@Component
+public class MagicShelfAuthorization {
+
+    public void assertCanUpdate(AuthenticationService auth, MagicShelfEntity shelf) {
+        Long userId = auth.getAuthenticatedUser().getId();
+
+        if (!shelf.getUserId().equals(userId)) {
+            throw new SecurityException("You are not authorized to update this shelf");
+        }
+        if (shelf.isPublic() && !auth.getAuthenticatedUser().getPermissions().isAdmin()) {
+            throw new SecurityException("You are not authorized to update a public shelf");
+        }
+    }
+
+    public void assertCanDelete(AuthenticationService auth, MagicShelfEntity shelf) {
+        Long userId = auth.getAuthenticatedUser().getId();
+
+        if (!shelf.getUserId().equals(userId)) {
+            throw new SecurityException("You are not authorized to delete this shelf");
+        }
+    }
+}

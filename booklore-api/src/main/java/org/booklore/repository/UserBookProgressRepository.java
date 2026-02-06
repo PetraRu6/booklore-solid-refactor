@@ -1,8 +1,8 @@
 package org.booklore.repository;
 
-import org.booklore.model.dto.BookCompletionHeatmapDto;
 import org.booklore.model.dto.CompletionTimelineDto;
 import org.booklore.model.entity.UserBookProgressEntity;
+import org.booklore.service.readingsession.ReadingSessionMappers;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -153,8 +153,9 @@ public interface UserBookProgressRepository extends JpaRepository<UserBookProgre
             GROUP BY YEAR(ubp.dateFinished), MONTH(ubp.dateFinished)
             ORDER BY year ASC, month ASC
             """)
-    List<BookCompletionHeatmapDto> findBookCompletionHeatmap(
+    List<ReadingSessionMappers.BookCompletionHeatmapPoint> findBookCompletionHeatmap(
             @Param("userId") Long userId,
             @Param("startYear") int startYear,
-            @Param("endYear") int endYear);
+            @Param("endYear") int endYear
+    );
 }

@@ -1,18 +1,10 @@
 package org.booklore.service;
 
-import org.booklore.config.security.service.AuthenticationService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.booklore.exception.ApiError;
-import org.booklore.model.dto.BookLoreUser;
 import org.booklore.model.dto.request.ReadingSessionRequest;
-import org.booklore.model.dto.response.BookCompletionHeatmapResponse;
-import org.booklore.model.dto.response.CompletionTimelineResponse;
-import org.booklore.model.dto.response.FavoriteReadingDaysResponse;
-import org.booklore.model.dto.response.GenreStatisticsResponse;
-import org.booklore.model.dto.response.PeakReadingHoursResponse;
-import org.booklore.model.dto.response.ReadingSessionHeatmapResponse;
-import org.booklore.model.dto.response.ReadingSessionResponse;
-import org.booklore.model.dto.response.ReadingSessionTimelineResponse;
-import org.booklore.model.dto.response.ReadingSpeedResponse;
+import org.booklore.model.dto.response.*;
 import org.booklore.model.entity.BookEntity;
 import org.booklore.model.entity.BookLoreUserEntity;
 import org.booklore.model.entity.ReadingSessionEntity;
@@ -21,8 +13,8 @@ import org.booklore.repository.BookRepository;
 import org.booklore.repository.ReadingSessionRepository;
 import org.booklore.repository.UserBookProgressRepository;
 import org.booklore.repository.UserRepository;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.booklore.service.readingsession.ReadingSessionContext;
+import org.booklore.service.readingsession.ReadingSessionMappers;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -47,167 +39,114 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ReadingSessionService {
 
-    private final AuthenticationService authenticationService;
+    private final ReadingSessionContext context;
+    private final ReadingSessionMappers mappers;
+
     private final ReadingSessionRepository readingSessionRepository;
     private final BookRepository bookRepository;
     private final UserRepository userRepository;
     private final UserBookProgressRepository userBookProgressRepository;
 
+    
     @Transactional
     public void recordSession(ReadingSessionRequest request) {
-        BookLoreUser authenticatedUser = authenticationService.getAuthenticatedUser();
-        Long userId = authenticatedUser.getId();
+        Long userId = context.userId();
 
-        BookLoreUserEntity userEntity = userRepository.findById(userId).orElseThrow(() -> new UsernameNotFoundException("User not found with ID: " + userId));
-        BookEntity book = bookRepository.findById(request.getBookId()).orElseThrow(() -> ApiError.BOOK_NOT_FOUND.createException(request.getBookId()));
+        BookLoreUserEntity userEntity = loadUserEntity(userId);
+        BookEntity book = loadBookEntity(request.getBookId());
 
-        ReadingSessionEntity session = ReadingSessionEntity.builder()
-                .user(userEntity)
-                .book(book)
-                .bookType(request.getBookType())
-                .startTime(request.getStartTime())
-                .endTime(request.getEndTime())
-                .durationSeconds(request.getDurationSeconds())
-                .durationFormatted(request.getDurationFormatted())
-                .startProgress(request.getStartProgress())
-                .endProgress(request.getEndProgress())
-                .progressDelta(request.getProgressDelta())
-                .startLocation(request.getStartLocation())
-                .endLocation(request.getEndLocation())
-                .build();
-
+        ReadingSessionEntity session = mappers.toEntity(request, userEntity, book);
         readingSessionRepository.save(session);
 
-        log.info("Reading session persisted successfully: sessionId={}, userId={}, bookId={}, duration={}s", session.getId(), userId, request.getBookId(), request.getDurationSeconds());
+        log.info(
+                "Reading session persisted successfully: sessionId={}, userId={}, bookId={}, duration={}s",
+                session.getId(), userId, request.getBookId(), request.getDurationSeconds()
+        );
     }
 
     @Transactional(readOnly = true)
     public List<ReadingSessionHeatmapResponse> getSessionHeatmapForYear(int year) {
-        BookLoreUser authenticatedUser = authenticationService.getAuthenticatedUser();
-        Long userId = authenticatedUser.getId();
+        Long userId = context.userId();
 
         return readingSessionRepository.findSessionCountsByUserAndYear(userId, year)
                 .stream()
-                .map(dto -> ReadingSessionHeatmapResponse.builder()
-                        .date(dto.getDate())
-                        .count(dto.getCount())
-                        .build())
+                .map(mappers::toHeatmap)
                 .collect(Collectors.toList());
     }
 
     @Transactional(readOnly = true)
     public List<ReadingSessionHeatmapResponse> getSessionHeatmapForMonth(int year, int month) {
-        BookLoreUser authenticatedUser = authenticationService.getAuthenticatedUser();
-        Long userId = authenticatedUser.getId();
+        Long userId = context.userId();
 
         return readingSessionRepository.findSessionCountsByUserAndYearAndMonth(userId, year, month)
                 .stream()
-                .map(dto -> ReadingSessionHeatmapResponse.builder()
-                        .date(dto.getDate())
-                        .count(dto.getCount())
-                        .build())
+                .map(mappers::toHeatmap)
                 .collect(Collectors.toList());
     }
 
     @Transactional(readOnly = true)
     public List<ReadingSessionTimelineResponse> getSessionTimelineForWeek(int year, int week) {
-        BookLoreUser authenticatedUser = authenticationService.getAuthenticatedUser();
-        Long userId = authenticatedUser.getId();
+        Long userId = context.userId();
 
-        LocalDate date = LocalDate.of(year, 1, 1)
-                .with(WeekFields.of(DayOfWeek.MONDAY, 1).weekOfYear(), week);
-        LocalDateTime startOfWeek = date.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).atStartOfDay();
-        LocalDateTime endOfWeek = date.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY)).plusDays(1).atStartOfDay();
+        WeekWindow window = weekWindow(year, week);
 
-        return readingSessionRepository.findSessionTimelineByUserAndWeek(userId, startOfWeek.atZone(ZoneId.systemDefault()).toInstant(), endOfWeek.atZone(ZoneId.systemDefault()).toInstant())
+        return readingSessionRepository.findSessionTimelineByUserAndWeek(
+                        userId,
+                        window.start().atZone(ZoneId.systemDefault()).toInstant(),
+                        window.endExclusive().atZone(ZoneId.systemDefault()).toInstant()
+                )
                 .stream()
-                .map(dto -> ReadingSessionTimelineResponse.builder()
-                        .bookId(dto.getBookId())
-                        .bookType(dto.getBookFileType())
-                        .bookTitle(dto.getBookTitle())
-                        .startDate(dto.getStartDate())
-                        .endDate(dto.getEndDate())
-                        .totalSessions(dto.getTotalSessions())
-                        .totalDurationSeconds(dto.getTotalDurationSeconds())
-                        .build())
+                .map(mappers::toTimeline)
                 .collect(Collectors.toList());
     }
 
+  
     @Transactional(readOnly = true)
     public List<ReadingSpeedResponse> getReadingSpeedForYear(int year) {
-        BookLoreUser authenticatedUser = authenticationService.getAuthenticatedUser();
-        Long userId = authenticatedUser.getId();
+        Long userId = context.userId();
 
         return readingSessionRepository.findReadingSpeedByUserAndYear(userId, year)
                 .stream()
-                .map(dto -> ReadingSpeedResponse.builder()
-                        .date(dto.getDate())
-                        .avgProgressPerMinute(dto.getAvgProgressPerMinute())
-                        .totalSessions(dto.getTotalSessions())
-                        .build())
+                .map(mappers::toReadingSpeed)
                 .collect(Collectors.toList());
     }
 
     @Transactional(readOnly = true)
     public List<PeakReadingHoursResponse> getPeakReadingHours(Integer year, Integer month) {
-        BookLoreUser authenticatedUser = authenticationService.getAuthenticatedUser();
-        Long userId = authenticatedUser.getId();
+        Long userId = context.userId();
 
         return readingSessionRepository.findPeakReadingHoursByUser(userId, year, month)
                 .stream()
-                .map(dto -> PeakReadingHoursResponse.builder()
-                        .hourOfDay(dto.getHourOfDay())
-                        .sessionCount(dto.getSessionCount())
-                        .totalDurationSeconds(dto.getTotalDurationSeconds())
-                        .build())
+                .map(mappers::toPeakHours)
                 .collect(Collectors.toList());
     }
 
     @Transactional(readOnly = true)
     public List<FavoriteReadingDaysResponse> getFavoriteReadingDays(Integer year, Integer month) {
-        BookLoreUser authenticatedUser = authenticationService.getAuthenticatedUser();
-        Long userId = authenticatedUser.getId();
-
-        String[] dayNames = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+        Long userId = context.userId();
 
         return readingSessionRepository.findFavoriteReadingDaysByUser(userId, year, month)
                 .stream()
-                .map(dto -> FavoriteReadingDaysResponse.builder()
-                        .dayOfWeek(dto.getDayOfWeek())
-                        .dayName(dayNames[dto.getDayOfWeek() - 1])
-                        .sessionCount(dto.getSessionCount())
-                        .totalDurationSeconds(dto.getTotalDurationSeconds())
-                        .build())
+                .map(dto -> mappers.toFavoriteDays(dto, dayName(dto.getDayOfWeek())))
                 .collect(Collectors.toList());
     }
+
 
     @Transactional(readOnly = true)
     public List<GenreStatisticsResponse> getGenreStatistics() {
-        BookLoreUser authenticatedUser = authenticationService.getAuthenticatedUser();
-        Long userId = authenticatedUser.getId();
+        Long userId = context.userId();
 
         return readingSessionRepository.findGenreStatisticsByUser(userId)
                 .stream()
-                .map(dto -> {
-                    double avgSessionsPerBook = dto.getBookCount() > 0
-                            ? (double) dto.getTotalSessions() / dto.getBookCount()
-                            : 0.0;
-
-                    return GenreStatisticsResponse.builder()
-                            .genre(dto.getGenre())
-                            .bookCount(dto.getBookCount())
-                            .totalSessions(dto.getTotalSessions())
-                            .totalDurationSeconds(dto.getTotalDurationSeconds())
-                            .averageSessionsPerBook(Math.round(avgSessionsPerBook * 100.0) / 100.0)
-                            .build();
-                })
+                .map(mappers::toGenreStatistics)
                 .collect(Collectors.toList());
     }
 
+    
     @Transactional(readOnly = true)
     public List<CompletionTimelineResponse> getCompletionTimeline(int year) {
-        BookLoreUser authenticatedUser = authenticationService.getAuthenticatedUser();
-        Long userId = authenticatedUser.getId();
+        Long userId = context.userId();
+
         Map<String, EnumMap<ReadStatus, Long>> timelineMap = new HashMap<>();
 
         userBookProgressRepository.findCompletionTimelineByUser(userId, year).forEach(dto -> {
@@ -217,25 +156,7 @@ public class ReadingSessionService {
         });
 
         return timelineMap.entrySet().stream()
-                .map(entry -> {
-                    String[] parts = entry.getKey().split("-");
-                    int yearPart = Integer.parseInt(parts[0]);
-                    int month = Integer.parseInt(parts[1]);
-                    Map<ReadStatus, Long> statusBreakdown = entry.getValue();
-
-                    long totalBooks = statusBreakdown.values().stream().mapToLong(Long::longValue).sum();
-                    long finishedBooks = statusBreakdown.getOrDefault(ReadStatus.READ, 0L);
-                    double completionRate = totalBooks > 0 ? (finishedBooks * 100.0 / totalBooks) : 0.0;
-
-                    return CompletionTimelineResponse.builder()
-                            .year(yearPart)
-                            .month(month)
-                            .totalBooks(totalBooks)
-                            .statusBreakdown(statusBreakdown)
-                            .finishedBooks(finishedBooks)
-                            .completionRate(Math.round(completionRate * 100.0) / 100.0)
-                            .build();
-                })
+                .map(entry -> mappers.toCompletionTimeline(entry.getKey(), entry.getValue()))
                 .sorted((a, b) -> {
                     int cmp = b.getYear().compareTo(a.getYear());
                     return cmp != 0 ? cmp : b.getMonth().compareTo(a.getMonth());
@@ -243,48 +164,64 @@ public class ReadingSessionService {
                 .collect(Collectors.toList());
     }
 
+    
     @Transactional(readOnly = true)
     public Page<ReadingSessionResponse> getReadingSessionsForBook(Long bookId, int page) {
-        BookLoreUser authenticatedUser = authenticationService.getAuthenticatedUser();
-        Long userId = authenticatedUser.getId();
+        Long userId = context.userId();
 
-        bookRepository.findById(bookId).orElseThrow(() -> ApiError.BOOK_NOT_FOUND.createException(bookId));
+        loadBookEntity(bookId);
 
         Pageable pageable = PageRequest.of(page, 5);
         Page<ReadingSessionEntity> sessions = readingSessionRepository.findByUserIdAndBookId(userId, bookId, pageable);
 
-        return sessions.map(session -> ReadingSessionResponse.builder()
-                .id(session.getId())
-                .bookId(session.getBook().getId())
-                .bookTitle(session.getBook().getMetadata().getTitle())
-                .bookType(session.getBookType())
-                .startTime(session.getStartTime())
-                .endTime(session.getEndTime())
-                .durationSeconds(session.getDurationSeconds())
-                .startProgress(session.getStartProgress())
-                .endProgress(session.getEndProgress())
-                .progressDelta(session.getProgressDelta())
-                .startLocation(session.getStartLocation())
-                .endLocation(session.getEndLocation())
-                .createdAt(session.getCreatedAt())
-                .build());
+        return sessions.map(mappers::toReadingSession);
     }
+
 
     @Transactional(readOnly = true)
     public List<BookCompletionHeatmapResponse> getBookCompletionHeatmap() {
-        BookLoreUser authenticatedUser = authenticationService.getAuthenticatedUser();
-        Long userId = authenticatedUser.getId();
+        Long userId = context.userId();
 
         int currentYear = LocalDate.now().getYear();
         int startYear = currentYear - 9;
 
         return userBookProgressRepository.findBookCompletionHeatmap(userId, startYear, currentYear)
                 .stream()
-                .map(dto -> BookCompletionHeatmapResponse.builder()
-                        .year(dto.getYear())
-                        .month(dto.getMonth())
-                        .count(dto.getCount())
-                        .build())
+                .map(mappers::toBookCompletionHeatmap)
                 .collect(Collectors.toList());
     }
+
+    private BookLoreUserEntity loadUserEntity(Long userId) {
+        return userRepository.findById(userId)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found with ID: " + userId));
+    }
+
+    private BookEntity loadBookEntity(Long bookId) {
+        return bookRepository.findById(bookId)
+                .orElseThrow(() -> ApiError.BOOK_NOT_FOUND.createException(bookId));
+    }
+
+    private static WeekWindow weekWindow(int year, int week) {
+        LocalDate date = LocalDate.of(year, 1, 1)
+                .with(WeekFields.of(DayOfWeek.MONDAY, 1).weekOfYear(), week);
+
+        LocalDateTime startOfWeek = date.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).atStartOfDay();
+        LocalDateTime endExclusive = date.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY)).plusDays(1).atStartOfDay();
+        return new WeekWindow(startOfWeek, endExclusive);
+    }
+
+    private static String dayName(int dayOfWeek1to7) {
+        return switch (dayOfWeek1to7) {
+            case 1 -> "Sunday";
+            case 2 -> "Monday";
+            case 3 -> "Tuesday";
+            case 4 -> "Wednesday";
+            case 5 -> "Thursday";
+            case 6 -> "Friday";
+            case 7 -> "Saturday";
+            default -> "Unknown";
+        };
+    }
+
+    private record WeekWindow(LocalDateTime start, LocalDateTime endExclusive) {}
 }

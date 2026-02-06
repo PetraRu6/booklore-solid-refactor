@@ -1,7 +1,7 @@
 package org.booklore.repository;
 
-import org.booklore.model.dto.*;
 import org.booklore.model.entity.ReadingSessionEntity;
+import org.booklore.service.readingsession.ReadingSessionMappers;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -23,7 +23,10 @@ public interface ReadingSessionRepository extends JpaRepository<ReadingSessionEn
             GROUP BY CAST(rs.startTime AS LocalDate)
             ORDER BY date
             """)
-    List<ReadingSessionCountDto> findSessionCountsByUserAndYear(@Param("userId") Long userId, @Param("year") int year);
+    List<ReadingSessionMappers.HeatmapPoint> findSessionCountsByUserAndYear(
+            @Param("userId") Long userId,
+            @Param("year") int year
+    );
 
     @Query("""
             SELECT CAST(rs.startTime AS LocalDate) as date, COUNT(rs) as count
@@ -34,32 +37,34 @@ public interface ReadingSessionRepository extends JpaRepository<ReadingSessionEn
             GROUP BY CAST(rs.startTime AS LocalDate)
             ORDER BY date
             """)
-    List<ReadingSessionCountDto> findSessionCountsByUserAndYearAndMonth(
+    List<ReadingSessionMappers.HeatmapPoint> findSessionCountsByUserAndYearAndMonth(
             @Param("userId") Long userId,
             @Param("year") int year,
-            @Param("month") int month);
+            @Param("month") int month
+    );
 
-        @Query("""
-                        SELECT
-                                b.id as bookId,
-                                COALESCE(b.metadata.title,
-                                        (SELECT bf.fileName FROM BookFileEntity bf WHERE bf.book.id = b.id ORDER BY bf.id ASC LIMIT 1),
-                                        'Unknown Book') as bookTitle,
-                                rs.bookType as bookFileType,
-                                rs.startTime as startDate,
-                                rs.endTime as endDate,
-                                1L as totalSessions,
-                                rs.durationSeconds as totalDurationSeconds
-                        FROM ReadingSessionEntity rs
-                        JOIN rs.book b
-                        WHERE rs.user.id = :userId
-                        AND rs.startTime >= :startOfWeek AND rs.startTime < :endOfWeek
-                        ORDER BY rs.startTime
-                        """)
-    List<ReadingSessionTimelineDto> findSessionTimelineByUserAndWeek(
+    @Query("""
+            SELECT
+                    b.id as bookId,
+                    COALESCE(b.metadata.title,
+                            (SELECT bf.fileName FROM BookFileEntity bf WHERE bf.book.id = b.id ORDER BY bf.id ASC LIMIT 1),
+                            'Unknown Book') as bookTitle,
+                    rs.bookType as bookFileType,
+                    rs.startTime as startDate,
+                    rs.endTime as endDate,
+                    1L as totalSessions,
+                    rs.durationSeconds as totalDurationSeconds
+            FROM ReadingSessionEntity rs
+            JOIN rs.book b
+            WHERE rs.user.id = :userId
+            AND rs.startTime >= :startOfWeek AND rs.startTime < :endOfWeek
+            ORDER BY rs.startTime
+            """)
+    List<ReadingSessionMappers.TimelinePoint> findSessionTimelineByUserAndWeek(
             @Param("userId") Long userId,
             @Param("startOfWeek") Instant startOfWeek,
-            @Param("endOfWeek") Instant endOfWeek);
+            @Param("endOfWeek") Instant endOfWeek
+    );
 
     @Query("""
             SELECT
@@ -74,7 +79,10 @@ public interface ReadingSessionRepository extends JpaRepository<ReadingSessionEn
             GROUP BY CAST(rs.createdAt AS LocalDate)
             ORDER BY date
             """)
-    List<ReadingSpeedDto> findReadingSpeedByUserAndYear(@Param("userId") Long userId, @Param("year") int year);
+    List<ReadingSessionMappers.ReadingSpeedPoint> findReadingSpeedByUserAndYear(
+            @Param("userId") Long userId,
+            @Param("year") int year
+    );
 
     @Query("""
             SELECT
@@ -88,10 +96,11 @@ public interface ReadingSessionRepository extends JpaRepository<ReadingSessionEn
             GROUP BY HOUR(rs.startTime)
             ORDER BY hourOfDay
             """)
-    List<PeakReadingHourDto> findPeakReadingHoursByUser(
+    List<ReadingSessionMappers.PeakHoursPoint> findPeakReadingHoursByUser(
             @Param("userId") Long userId,
             @Param("year") Integer year,
-            @Param("month") Integer month);
+            @Param("month") Integer month
+    );
 
     @Query("""
             SELECT
@@ -105,10 +114,11 @@ public interface ReadingSessionRepository extends JpaRepository<ReadingSessionEn
             GROUP BY DAYOFWEEK(rs.startTime)
             ORDER BY dayOfWeek
             """)
-    List<FavoriteReadingDayDto> findFavoriteReadingDaysByUser(
+    List<ReadingSessionMappers.FavoriteDaysPoint> findFavoriteReadingDaysByUser(
             @Param("userId") Long userId,
             @Param("year") Integer year,
-            @Param("month") Integer month);
+            @Param("month") Integer month
+    );
 
     @Query("""
             SELECT
@@ -123,7 +133,7 @@ public interface ReadingSessionRepository extends JpaRepository<ReadingSessionEn
             GROUP BY c.name
             ORDER BY totalSessions DESC
             """)
-    List<GenreStatisticsDto> findGenreStatisticsByUser(@Param("userId") Long userId);
+    List<ReadingSessionMappers.GenreStatsPoint> findGenreStatisticsByUser(@Param("userId") Long userId);
 
     @Query("""
             SELECT rs
@@ -135,5 +145,6 @@ public interface ReadingSessionRepository extends JpaRepository<ReadingSessionEn
     Page<ReadingSessionEntity> findByUserIdAndBookId(
             @Param("userId") Long userId,
             @Param("bookId") Long bookId,
-            Pageable pageable);
+            Pageable pageable
+    );
 }

@@ -2,21 +2,26 @@ package org.booklore.service;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.booklore.service.streaming.ByteRange;
+import org.booklore.service.streaming.ByteStreamer;
+import org.booklore.service.streaming.ClientDisconnectDetector;
+import org.booklore.service.streaming.RangeParser;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.io.OutputStream;
-import java.io.RandomAccessFile;
-import java.net.SocketTimeoutException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class FileStreamingService {
 
-    private static final int BUFFER_SIZE = 64 * 1024;
+    private final RangeParser rangeParser;
+    private final ByteStreamer byteStreamer;
+    private final ClientDisconnectDetector disconnectDetector;
 
     public void streamWithRangeSupport(
             Path filePath,
@@ -33,148 +38,66 @@ public class FileStreamingService {
         long fileSize = Files.size(filePath);
         String rangeHeader = request.getHeader("Range");
 
-        response.setHeader("Accept-Ranges", "bytes");
-        response.setHeader("Cache-Control", "no-store");
-        response.setHeader("Content-Disposition", "inline");
-        response.setContentType(contentType);
+        applyCommonHeaders(response, contentType);
 
-        // -------------------------
         // HEAD
-        // -------------------------
         if ("HEAD".equalsIgnoreCase(request.getMethod())) {
-            response.setStatus(HttpServletResponse.SC_PARTIAL_CONTENT);
-            response.setHeader(
-                    "Content-Range",
-                    "bytes 0-" + (fileSize - 1) + "/" + fileSize
-            );
-            response.setContentLengthLong(fileSize);
+            writeHead(response, fileSize);
             return;
         }
 
         try {
-            // -------------------------
             // NO RANGE
-            // -------------------------
             if (rangeHeader == null) {
-                response.setStatus(HttpServletResponse.SC_OK);
-                response.setContentLengthLong(fileSize);
-                streamBytes(filePath, 0, fileSize - 1, response.getOutputStream());
+                writeFullContent(response, fileSize);
+                byteStreamer.stream(filePath, 0, fileSize - 1, response.getOutputStream());
                 return;
             }
 
-            // -------------------------
             // RANGE
-            // -------------------------
-            Range range = parseRange(rangeHeader, fileSize);
+            ByteRange range = rangeParser.parse(rangeHeader, fileSize);
             if (range == null) {
-                response.setStatus(HttpServletResponse.SC_REQUESTED_RANGE_NOT_SATISFIABLE);
-                response.setHeader("Content-Range", "bytes */" + fileSize);
+                writeUnsatisfiable(response, fileSize);
                 return;
             }
 
-            long length = range.end - range.start + 1;
-
-            response.setStatus(HttpServletResponse.SC_PARTIAL_CONTENT);
-            response.setHeader(
-                    "Content-Range",
-                    "bytes " + range.start + "-" + range.end + "/" + fileSize
-            );
-            response.setContentLengthLong(length);
-
-            streamBytes(filePath, range.start, range.end, response.getOutputStream());
+            writePartialContent(response, range, fileSize);
+            byteStreamer.stream(filePath, range.start(), range.end(), response.getOutputStream());
 
         } catch (IOException e) {
-            if (isClientDisconnect(e)) {
+            if (disconnectDetector.isClientDisconnect(e)) {
                 log.debug("Client disconnected during streaming: {}", e.getMessage());
-            } else {
-                throw e;
+                return;
             }
+            throw e;
         }
     }
 
-    // ------------------------------------------------------------
-    // RANGE PARSER — RFC 7233 compliant
-    // ------------------------------------------------------------
-    Range parseRange(String header, long size) {
-        if (header == null || !header.startsWith("bytes=")) {
-            return null;
-        }
-
-        String value = header.substring(6).trim();
-        String[] parts = value.split(",", 2);
-        String range = parts[0].trim();
-
-        int dash = range.indexOf('-');
-        if (dash < 0) return null;
-
-        try {
-            // suffix-byte-range-spec: "-<length>"
-            if (dash == 0) {
-                long suffix = Long.parseLong(range.substring(1));
-                if (suffix <= 0) return null;
-                suffix = Math.min(suffix, size);
-                return new Range(size - suffix, size - 1);
-            }
-
-            long start = Long.parseLong(range.substring(0, dash));
-
-            // open-ended: "<start>-"
-            if (dash == range.length() - 1) {
-                if (start >= size) return null;
-                return new Range(start, size - 1);
-            }
-
-            // "<start>-<end>"
-            long end = Long.parseLong(range.substring(dash + 1));
-            if (start > end || start >= size) return null;
-            end = Math.min(end, size - 1);
-
-            return new Range(start, end);
-
-        } catch (NumberFormatException e) {
-            return null;
-        }
+    private static void applyCommonHeaders(HttpServletResponse response, String contentType) {
+        response.setHeader("Accept-Ranges", "bytes");
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("Content-Disposition", "inline");
+        response.setContentType(contentType);
     }
 
-    // ------------------------------------------------------------
-    // STREAM BYTES
-    // ------------------------------------------------------------
-    private void streamBytes(Path path, long start, long end, OutputStream out)
-            throws IOException {
-
-        try (RandomAccessFile raf = new RandomAccessFile(path.toFile(), "r")) {
-            raf.seek(start);
-
-            long remaining = end - start + 1;
-            byte[] buffer = new byte[BUFFER_SIZE];
-
-            while (remaining > 0) {
-                int read = raf.read(buffer, 0, (int) Math.min(buffer.length, remaining));
-                if (read == -1) break;
-                out.write(buffer, 0, read);
-                remaining -= read;
-            }
-
-            out.flush();
-        }
+    private static void writeHead(HttpServletResponse response, long fileSize) {
+        response.setStatus(HttpServletResponse.SC_OK);
+        response.setContentLengthLong(fileSize);
     }
 
-    // ------------------------------------------------------------
-    // DISCONNECT DETECTION
-    // ------------------------------------------------------------
-    boolean isClientDisconnect(IOException e) {
-        if (e instanceof SocketTimeoutException) return true;
-
-        String msg = e.getMessage();
-        if (msg == null) return false;
-
-        return msg.contains("Broken pipe")
-                || msg.contains("Connection reset")
-                || msg.contains("connection was aborted")
-                || msg.contains("An established connection was aborted")
-                || msg.contains("SocketTimeout")
-                || msg.contains("timed out");
+    private static void writeFullContent(HttpServletResponse response, long fileSize) {
+        response.setStatus(HttpServletResponse.SC_OK);
+        response.setContentLengthLong(fileSize);
     }
 
-    record Range(long start, long end) {}
+    private static void writePartialContent(HttpServletResponse response, ByteRange range, long fileSize) {
+        response.setStatus(HttpServletResponse.SC_PARTIAL_CONTENT);
+        response.setHeader("Content-Range", "bytes " + range.start() + "-" + range.end() + "/" + fileSize);
+        response.setContentLengthLong(range.length());
+    }
+
+    private static void writeUnsatisfiable(HttpServletResponse response, long fileSize) {
+        response.setStatus(HttpServletResponse.SC_REQUESTED_RANGE_NOT_SATISFIABLE);
+        response.setHeader("Content-Range", "bytes */" + fileSize);
+    }
 }

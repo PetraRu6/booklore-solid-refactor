@@ -1,30 +1,23 @@
 package org.booklore.service;
 
-import org.booklore.config.security.service.AuthenticationService;
-import org.booklore.model.entity.BookLoreUserEntity;
-import org.booklore.model.entity.UserPermissionsEntity;
-import org.booklore.model.enums.PermissionType;
-import org.booklore.model.websocket.Topic;
-import org.booklore.repository.UserRepository;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.booklore.config.security.service.AuthenticationService;
+import org.booklore.model.enums.PermissionType;
+import org.booklore.model.websocket.Topic;
 import org.springframework.stereotype.Service;
 
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
-
-import static org.booklore.util.UserPermissionUtils.hasPermission;
 
 @Slf4j
 @Service
 @AllArgsConstructor
 public class NotificationService {
 
-    private final SimpMessagingTemplate messagingTemplate;
+    private final UserMessageSender sender;
     private final AuthenticationService authenticationService;
-    private final UserRepository userRepository;
+    private final PermissionUserSelector permissionUserSelector;
 
     public void sendMessage(Topic topic, Object message) {
         try {
@@ -33,34 +26,22 @@ public class NotificationService {
                 log.warn("No authenticated user found. Message not sent: {}", topic);
                 return;
             }
-            String username = user.getUsername();
-            messagingTemplate.convertAndSendToUser(username, topic.getPath(), message);
+            sender.sendToUser(user.getUsername(), topic.getPath(), message);
         } catch (Exception e) {
             log.error("Error sending message to topic {}: {}", topic, e.getMessage(), e);
         }
     }
 
     public void sendMessageToPermissions(Topic topic, Object message, Set<PermissionType> permissionTypes) {
-        if (permissionTypes == null || permissionTypes.isEmpty()) return;
+        List<String> usernames = permissionUserSelector.selectUsernames(permissionTypes);
+        if (usernames.isEmpty()) return;
 
-        Set<PermissionType> permissionSet = EnumSet.noneOf(PermissionType.class);
-        permissionSet.addAll(permissionTypes);
-
-        try {
-            List<BookLoreUserEntity> users = userRepository.findAll();
-            for (BookLoreUserEntity user : users) {
-                UserPermissionsEntity perms = user.getPermissions();
-                if (perms != null) {
-                    for (PermissionType p : permissionSet) {
-                        if (hasPermission(perms, p)) {
-                            messagingTemplate.convertAndSendToUser(user.getUsername(), topic.getPath(), message);
-                            break;
-                        }
-                    }
-                }
+        for (String username : usernames) {
+            try {
+                sender.sendToUser(username, topic.getPath(), message);
+            } catch (Exception e) {
+                log.error("Error sending message to user {} for topic {}: {}", username, topic, e.getMessage(), e);
             }
-        } catch (Exception e) {
-            log.error("Error sending message to users with permissions {}: {}", permissionSet, e.getMessage(), e);
         }
     }
 }

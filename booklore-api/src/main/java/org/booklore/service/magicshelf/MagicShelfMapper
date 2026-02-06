@@ -1,0 +1,40 @@
+package org.booklore.service.magicshelf;
+
+import org.booklore.model.dto.MagicShelf;
+import org.booklore.model.entity.MagicShelfEntity;
+import org.springframework.stereotype.Component;
+
+@Component
+public class MagicShelfMapper {
+
+    public MagicShelf toDto(MagicShelfEntity entity) {
+        MagicShelf dto = new MagicShelf();
+        dto.setId(entity.getId());
+        dto.setName(entity.getName());
+        dto.setIcon(entity.getIcon());
+        dto.setIconType(entity.getIconType());
+        dto.setFilterJson(entity.getFilterJson());
+        dto.setIsPublic(entity.isPublic());
+        return dto;
+    }
+
+    public MagicShelfEntity toEntity(MagicShelf dto, Long userId) {
+        MagicShelfEntity entity = new MagicShelfEntity();
+        entity.setId(dto.getId());
+        entity.setName(dto.getName());
+        entity.setIcon(dto.getIcon());
+        entity.setIconType(dto.getIconType());
+        entity.setFilterJson(dto.getFilterJson());
+        entity.setPublic(dto.getIsPublic());
+        entity.setUserId(userId);
+        return entity;
+    }
+
+    public void updateEntity(MagicShelfEntity entity, MagicShelf dto) {
+        entity.setName(dto.getName());
+        entity.setIcon(dto.getIcon());
+        entity.setIconType(dto.getIconType());
+        entity.setFilterJson(dto.getFilterJson());
+        entity.setPublic(dto.getIsPublic());
+    }
+}
